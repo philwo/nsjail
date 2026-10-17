@@ -132,7 +132,9 @@ static bool parseInternal(nsj_t* nsj, const nsjail::NsJailConfig& njc) {
 		nsj->njc.set_seccomp_policy_file(njc.seccomp_policy_file());
 	}
 
+	/* A config's command replaces the one from an earlier config */
 	if (njc.has_exec_bin()) {
+		nsj->argv.clear();
 		if (njc.exec_bin().has_path()) {
 			nsj->argv.push_back(njc.exec_bin().path());
 		}
