@@ -245,8 +245,9 @@ endif
 	$(call run_test, ./nsjail $(OLD_EF) -q -Mo --chroot / --user 99999 --group 99999 -- /bin/bash -c 'touch /run/user/$(UID)/nsjail_test2 || exit 77', 77)
 	$(call run_test, ./nsjail $(OLD_EF) -q -Mo --chroot / --user 99999 --group 99999 --rw -- /bin/bash -c 'touch /run/user/$(UID)/nsjail_test2 && exit 77', 77)
 	$(call run_test, rm -f /run/user/$(UID)/nsjail_test2, 0)
-	$(call run_test, ./nsjail $(OLD_EF) --config configs/bash-with-fake-geteuid.cfg -q -t 1 < /dev/null, 0)
-	$(call run_test, ./nsjail $(OLD_EF) --config configs/bash-with-fake-geteuid.json -q -t 1 < /dev/null, 0)
+	# The config sets rlimit_fsize to 0, so the shell can't write to a regular file
+	$(call run_test, ./nsjail $(OLD_EF) --config configs/bash-with-fake-geteuid.cfg -q -t 1 < /dev/null > /dev/null 2>&1, 0)
+	$(call run_test, ./nsjail $(OLD_EF) --config configs/bash-with-fake-geteuid.json -q -t 1 < /dev/null > /dev/null 2>&1, 0)
 	$(call run_test, ./nsjail $(OLD_EF) --config configs/static-busybox-with-execveat.cfg -q -t 1, 137)
 	$(call run_test, ./nsjail $(OLD_EF) --config configs/home-documents-with-xorg-no-net.cfg -q -- /bin/true, 0)
 	$(call run_test, ./nsjail $(OLD_EF) --config configs/home-documents-with-xorg-no-net.cfg -q -- /bin/false, 1)
@@ -273,8 +274,9 @@ endif
 	$(call run_test, ./nsjail $(NEW_EF) -q -Mo --chroot / --user 99999 --group 99999 -- /bin/bash -c 'touch /run/user/$(UID)/nsjail_test2 || exit 77', 77)
 	$(call run_test, ./nsjail $(NEW_EF) -q -Mo --chroot / --user 99999 --group 99999 --rw -- /bin/bash -c 'touch /run/user/$(UID)/nsjail_test2 && exit 77', 77)
 	$(call run_test, rm -f /run/user/$(UID)/nsjail_test2, 0)
-	$(call run_test, ./nsjail $(NEW_EF) --config configs/bash-with-fake-geteuid.cfg -q -t 1 < /dev/null, 0)
-	$(call run_test, ./nsjail $(NEW_EF) --config configs/bash-with-fake-geteuid.json -q -t 1 < /dev/null, 0)
+	# The config sets rlimit_fsize to 0, so the shell can't write to a regular file
+	$(call run_test, ./nsjail $(NEW_EF) --config configs/bash-with-fake-geteuid.cfg -q -t 1 < /dev/null > /dev/null 2>&1, 0)
+	$(call run_test, ./nsjail $(NEW_EF) --config configs/bash-with-fake-geteuid.json -q -t 1 < /dev/null > /dev/null 2>&1, 0)
 	$(call run_test, ./nsjail $(NEW_EF) --config configs/static-busybox-with-execveat.cfg -q -t 1, 137)
 	$(call run_test, ./nsjail $(NEW_EF) --config configs/home-documents-with-xorg-no-net.cfg -q -- /bin/true, 0)
 	$(call run_test, ./nsjail $(NEW_EF) --config configs/home-documents-with-xorg-no-net.cfg -q -- /bin/false, 1)
