@@ -173,6 +173,21 @@ check_refused parents_in_bind '' -- -R "@SRC@:/src" -m none:/src/x/y:tmpfs:rw
 check_refused symlink_in_bind '' -- -R "@SRC@:/src" -s /usr:/src/link
 check_refused mount_point_in_chroot "$chroot_dirs" -- --chroot "@SRC@" -m none:/data:tmpfs:rw
 
+# The same, with the bind source itself as the read-only mount.
+ro_top='mount -t tmpfs none "$src"; mount -o remount,bind,ro "$src"'
+check rw_bind "$sub" "/src=rw /src/sub=rw" "/src,/src/sub" -- -B "@SRC@:/src"
+check ro_bind_rw_root "$sub" "/src=ro /src/sub=ro" "/src,/src/sub" -- --rw -R "@SRC@:/src"
+check rw_bind_locked_ro_top "$ro_top" "/src=ro" "/src" -- -B "@SRC@:/src"
+check rw_bind_ro_top_no_userns "$ro_top" "/src=ro" "/src" -- --disable_clone_newuser -B "@SRC@:/src"
+check rw_bind_in_ro_bind 'mkdir -p "$src/inner/sub"; mount -t tmpfs none "$src/inner/sub"' \
+	"/src=ro /src/inner=rw /src/inner/sub=rw" "/src,/src/inner,/src/inner/sub" \
+	-- -R "@SRC@:/src" -B "@SRC@/inner:/src/inner"
+# Only a config can declare a read-only tmpfs entry: -m passes "ro" to the
+# filesystem as an option.
+ro_tmpfs_cfg='printf "mount { dst: \"/data\" fstype: \"tmpfs\" }\n" >"$src.cfg"'
+check rw_bind_in_ro_tmpfs "$sub; $ro_tmpfs_cfg" "/data=ro /data/x=rw /data/x/sub=rw" \
+	"/data,/data/x,/data/x/sub" -- --config "@SRC@.cfg" -B "@SRC@:/data/x"
+
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed"
 	exit 1

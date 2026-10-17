@@ -71,7 +71,6 @@ std::unique_ptr<std::string> buildMountTree(nsj_t*, std::vector<mnt::mount_t>*) 
 #include <errno.h>
 #include <inttypes.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <unistd.h>
 
 #include <cstdint>
@@ -136,53 +135,6 @@ static void applyGenericMountOption(const std::string& opt, uintptr_t* flags) {
 	} else if (opt == "exec") {
 		*flags &= ~MS_NOEXEC;
 	}
-}
-
-static unsigned long computeLegacyRemountFlags(const mount_t& mpt, const struct statvfs& vfs) {
-	struct {
-		const unsigned long mount_flag;
-		const unsigned long vfs_flag;
-	} static const mountPairs[] = {
-	    {MS_NOSUID, ST_NOSUID},
-	    {MS_NODEV, ST_NODEV},
-	    {MS_NOEXEC, ST_NOEXEC},
-	    {MS_SYNCHRONOUS, ST_SYNCHRONOUS},
-	    {MS_MANDLOCK, ST_MANDLOCK},
-	    {MS_NOATIME, ST_NOATIME},
-	    {MS_NODIRATIME, ST_NODIRATIME},
-	    {MS_RELATIME, ST_RELATIME},
-	    {MS_NOSYMFOLLOW, ST_NOSYMFOLLOW},
-	};
-
-	const unsigned long per_mountpoint_flags =
-	    MS_LAZYTIME | MS_MANDLOCK | MS_NOATIME | MS_NODEV | MS_NODIRATIME | MS_NOEXEC |
-	    MS_NOSUID | MS_RELATIME | MS_RDONLY | MS_SYNCHRONOUS | MS_NOSYMFOLLOW;
-
-	unsigned long flags = MS_REMOUNT | MS_BIND | (mpt.flags & per_mountpoint_flags);
-	for (const auto& i : mountPairs) {
-		if (vfs.f_flag & i.vfs_flag) {
-			flags |= i.mount_flag;
-		}
-	}
-	return flags;
-}
-
-static bool remountWithLegacyMount(const mount_t& mpt) {
-	struct statvfs vfs;
-	if (TEMP_FAILURE_RETRY(statvfs(mpt.dst.c_str(), &vfs)) == -1) {
-		PLOG_W("statvfs('%s')", mpt.dst.c_str());
-		return false;
-	}
-
-	unsigned long flags = computeLegacyRemountFlags(mpt, vfs);
-	LOG_D("Falling back to legacy remount for '%s' with flags: %s", mpt.dst.c_str(),
-	    mnt::flagsToStr(flags).c_str());
-
-	if (mount(mpt.dst.c_str(), mpt.dst.c_str(), nullptr, flags, nullptr) == -1) {
-		PLOG_W("mount('%s', flags=%s)", mpt.dst.c_str(), mnt::flagsToStr(flags).c_str());
-		return false;
-	}
-	return true;
 }
 
 static bool createDirAt(int dir_fd, const char* path, mode_t mode) {
@@ -443,9 +395,9 @@ static bool mountDynamicContentAt(
 		return false;
 	}
 
-	if (!applyMountFlags(mnt_fd, mpt->flags & ~MS_RDONLY)) {
+	if (!applyMountFlags(mnt_fd, mpt->flags)) {
 		LOG_W("Failed to apply mount flags to '%s'", basename);
-		if (mpt->flags & (MS_NOSUID | MS_NODEV | MS_NOEXEC)) {
+		if (mpt->flags & (MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC)) {
 			close(mnt_fd);
 			unlinkat(staging_fd, src_rel.c_str(), 0);
 			return false;
@@ -483,15 +435,21 @@ static bool doBindMountAt(mount_t* mpt, int parent_fd, const char* basename) {
 	}
 
 	/*
-	 * Apply non-RO flags now; RO applied later via remount.
-	 * When the bind is recursive (MS_REC), open_tree above cloned the whole
-	 * subtree (AT_RECURSIVE), so the nosuid/nodev/noexec attributes must be
+	 * Apply all flags, read-only included, before attaching the bind. nsjail
+	 * never creates mount points inside a bind, so later entries don't need it
+	 * writable, and the flags reach only the bind's own mounts, not entries
+	 * mounted inside it later. When the bind is recursive (MS_REC), open_tree
+	 * above cloned the whole subtree (AT_RECURSIVE), so the attributes must be
 	 * applied recursively as well -- otherwise nested submounts of the source
-	 * keep their original suid/dev/exec-permitting attributes inside the jail.
-	 * This mirrors the recursive read-only pass done later on the root.
+	 * keep their original attributes inside the jail. A writable bind doesn't
+	 * touch read-only, so read-only source mounts stay read-only.
 	 */
-	if (!applyMountFlags(mnt_fd, mpt->flags & ~MS_RDONLY, true, (mpt->flags & MS_REC) != 0)) {
+	if (!applyMountFlags(mnt_fd, mpt->flags, true, (mpt->flags & MS_REC) != 0)) {
 		LOG_W("Failed to apply mount flags to '%s'", basename);
+		if (mpt->flags & (MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC)) {
+			close(mnt_fd);
+			return false;
+		}
 	}
 
 	if (util::syscall(__NR_move_mount, (uintptr_t)mnt_fd, (uintptr_t)"", (uintptr_t)parent_fd,
@@ -562,9 +520,11 @@ static bool mountSinglePointAt(mount_t* mpt, int root_fd, int staging_fd) {
 		return false;
 	}
 
-	if (!applyMountFlags(mnt_fd, mpt->flags & ~MS_RDONLY)) {
+	/* nsjail may create mount points in its own tmpfs, so it gets read-only last. */
+	uintptr_t flags = mnt::isOwnTmpfs(*mpt) ? mpt->flags & ~MS_RDONLY : mpt->flags;
+	if (!applyMountFlags(mnt_fd, flags)) {
 		LOG_W("Failed to apply mount flags to '%s'", basename.c_str());
-		if (mpt->flags & (MS_NOSUID | MS_NODEV | MS_NOEXEC)) {
+		if (mpt->flags & (MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC)) {
 			close(mnt_fd);
 			return false;
 		}
@@ -670,14 +630,21 @@ bool remountPt(mnt::mount_t& mpt) {
 		return true;
 	}
 
-	close(mpt.fd);
+	int fd = mpt.fd;
 	mpt.fd = -1;
+	defer {
+		close(fd);
+	};
 
-	if (!remountWithLegacyMount(mpt)) {
-		LOG_W("Failed to apply final flags to '%s'", mpt.dst.c_str());
-		return false;
+	/*
+	 * Everything except nsjail's own tmpfs mounts got its flags when mounted. A
+	 * tmpfs entry has no submounts of its own, so this doesn't reach the
+	 * entries mounted inside it.
+	 */
+	if (!(mpt.flags & MS_RDONLY) || !mnt::isOwnTmpfs(mpt)) {
+		return true;
 	}
-	return true;
+	return applyMountFlags(fd, MS_RDONLY);
 }
 
 std::unique_ptr<std::string> buildMountTree(nsj_t* nsj, std::vector<mnt::mount_t>* mounted_mpts) {
@@ -770,15 +737,10 @@ std::unique_ptr<std::string> buildMountTree(nsj_t* nsj, std::vector<mnt::mount_t
 		}
 	}
 
-	if (!nsj->is_root_rw) {
-		struct mount_attr ro_attr = {};
-		ro_attr.attr_set = MOUNT_ATTR_RDONLY;
-		if (util::syscall(__NR_mount_setattr, (uintptr_t)staging_fd, (uintptr_t)"",
-			(uintptr_t)(AT_EMPTY_PATH | AT_RECURSIVE), (uintptr_t)&ro_attr,
-			sizeof(ro_attr)) < 0) {
-			PLOG_E("mount_setattr(staging_fd, MOUNT_ATTR_RDONLY)");
-			return nullptr;
-		}
+	/* Only the root tmpfs: each entry gets its own flags in remountPt(). */
+	if (!nsj->is_root_rw && !applyMountFlags(staging_fd, MS_RDONLY)) {
+		LOG_E("Failed to make the root read-only");
+		return nullptr;
 	}
 
 	return destdir;

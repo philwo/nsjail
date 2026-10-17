@@ -348,14 +348,18 @@ static bool initCloneNs(nsj_t* nsj) {
 		return false;
 	}
 
-	/* The legacy backend discovers nested mounts through /proc/self/mountinfo.
-	 * Apply its remount pass while the original procfs is still visible; the
-	 * final jail may intentionally omit /proc. */
-	if (!nsj->mnt_newapi) {
-		for (auto& mpt : mounted_mpts) {
-			if (!legacy::remountPt(mpt, *destdir)) {
+	/* Apply each entry's final flags in config order, so that an entry nested
+	 * in an earlier one overrides it. This runs before pivot_root: the new
+	 * backend's mount fds must still be attached to this namespace, and the
+	 * legacy backend discovers nested mounts through /proc/self/mountinfo,
+	 * which the final jail may intentionally omit. */
+	for (auto& mpt : mounted_mpts) {
+		if (nsj->mnt_newapi) {
+			if (!newapi::remountPt(mpt) && mpt.mpt->mandatory()) {
 				return false;
 			}
+		} else if (!legacy::remountPt(mpt, *destdir)) {
+			return false;
 		}
 	}
 
@@ -414,16 +418,6 @@ static bool initCloneNs(nsj_t* nsj) {
 
 		if (chroot(".") == -1) {
 			PLOG_E("chroot(%s)", QC(*destdir));
-			return false;
-		}
-	}
-
-	/* The new mount API keeps a mount fd, so it does not need /proc inside the jail. */
-	for (auto& mpt : mounted_mpts) {
-		if (!nsj->mnt_newapi) {
-			continue;
-		}
-		if (!newapi::remountPt(mpt) && mpt.mpt->mandatory()) {
 			return false;
 		}
 	}
