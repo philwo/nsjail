@@ -179,6 +179,10 @@ Override command:
 ./nsjail --config myconfig.cfg -- /usr/bin/id
 ```
 
+The arguments after `--` replace the config's `exec_bin` arguments, including
+`argv[0]`. If the config sets `exec_bin.path`, nsjail still executes that file
+with the new arguments, the same as with `--exec_file`.
+
 ### Example Configs
 
 - **[bash-with-fake-geteuid.cfg](https://github.com/google/nsjail/blob/master/configs/bash-with-fake-geteuid.cfg)**: Bash with fake root UID
