@@ -298,8 +298,25 @@ static bool remountOne(const std::string& path, const mnt::mount_t& mpt) {
 	return true;
 }
 
+/*
+ * Whether the jail can't reach the mount with the given mountinfo ID at path,
+ * which a remount by path then can't either. Another mount covers it, as a
+ * later entry's mount covers submounts of an earlier bind, or nsjail may not
+ * look up the path, as below /sys/kernel/debug, which only the real root may
+ * enter. The jail has at most nsjail's rights in its user namespace.
+ */
+static bool isUnreachable(const std::string& path, uint64_t mnt_id) {
+	struct statx stx;
+	if (statx(AT_FDCWD, path.c_str(), AT_NO_AUTOMOUNT, STATX_MNT_ID, &stx) == -1) {
+		return errno == ENOENT || errno == EACCES;
+	}
+	/* Kernels before 5.8 don't report the mount ID. */
+	return (stx.stx_mask & STATX_MNT_ID) && stx.stx_mnt_id != mnt_id;
+}
+
 /* A mount as /proc/self/mountinfo lists it. */
 struct MountInfo {
+	uint64_t id;
 	std::string path;
 };
 
@@ -332,7 +349,7 @@ static bool readMountsAtOrBelow(const std::string& path, std::vector<MountInfo>*
 		fclose(f);
 	};
 
-	/* Field 5 (0-indexed 4) is the mount point. */
+	/* Field 1 (0-indexed 0) is the mount ID, field 5 (0-indexed 4) the mount point. */
 	const std::string prefix = path == "/" ? path : path + "/";
 	char* line = nullptr;
 	size_t len = 0;
@@ -344,7 +361,7 @@ static bool readMountsAtOrBelow(const std::string& path, std::vector<MountInfo>*
 		}
 		std::string mp = unescapeMountInfoPath(fields[4]);
 		if (mp == path || mp.compare(0, prefix.size(), prefix) == 0) {
-			mounts->push_back({mp});
+			mounts->push_back({strtoull(fields[0].c_str(), nullptr, 10), mp});
 		}
 	}
 	free(line);
@@ -406,7 +423,8 @@ bool remountPt(mnt::mount_t& mpt, const std::string& root_dir) {
 			return false;
 		}
 		for (const auto& m : mounts) {
-			if (m.path != dst_path && !remountOne(m.path, mpt)) {
+			if (m.path != dst_path && !isUnreachable(m.path, m.id) &&
+			    !remountOne(m.path, mpt)) {
 				return false;
 			}
 		}

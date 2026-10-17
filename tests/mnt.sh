@@ -18,7 +18,9 @@ if [ -z "${NSJAIL_MNT_TEST_DIR:-}" ]; then
 		exit 0
 	fi
 	dir=$(mktemp -d "${TMPDIR:-/tmp}/nsjail-mnt-test.XXXXXX")
-	trap 'rm -rf "$dir"' EXIT
+	# Cases leave files owned by other mapped users, which only root in such a
+	# namespace may remove.
+	trap 'unshare --map-auto --map-root-user rm -rf "$dir"' EXIT
 	NSJAIL_MNT_TEST_DIR=$dir unshare --map-auto --map-root-user -m --propagation private \
 		"$0" "$@"
 	exit
@@ -102,6 +104,15 @@ check entries_in_chroot "$chroot_dirs"'; mkdir "$src/data"' "/=ro /data=rw" "/,/
 # mountinfo escapes the space in this submount's path as \040.
 check ro_bind_escaped_sub 'mkdir "$src/my disk"; mount -t tmpfs none "$src/my disk"' \
 	"/src=ro /src/my disk=ro" "/src,/src/my disk" -- -R "@SRC@:/src"
+
+# A later entry covers the source's submounts, as the jail's /proc covers the
+# host's in a bind of /. The covered path /src/sub/inner doesn't exist in it.
+check covered_sub "$sub"'; mkdir "$src/sub/inner"; mount -t tmpfs none "$src/sub/inner"' \
+	"/src=ro /src/sub=rw" "/src,/src/sub" -- -R "@SRC@:/src" -m none:/src/sub:tmpfs:rw
+# Only a user that nsjail's namespace doesn't map may enter the directory above
+# this submount, as only the real root may enter /sys/kernel/debug.
+check unreachable_sub 'mkdir -m 700 "$src/locked" "$src/locked/sub"
+	mount -t tmpfs none "$src/locked/sub"; chown 1:1 "$src/locked"' "/src=ro" "/src" -- -R "@SRC@:/src"
 
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed"
