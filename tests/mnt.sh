@@ -99,6 +99,10 @@ chroot_dirs='for d in "${sysdirs[@]}" /proc; do mkdir -p "$src$d"; done'
 check entries_in_chroot "$chroot_dirs"'; mkdir "$src/data"' "/=ro /data=rw" "/,/data" \
 	-- --chroot "@SRC@" -m none:/data:tmpfs:rw
 
+# mountinfo escapes the space in this submount's path as \040.
+check ro_bind_escaped_sub 'mkdir "$src/my disk"; mount -t tmpfs none "$src/my disk"' \
+	"/src=ro /src/my disk=ro" "/src,/src/my disk" -- -R "@SRC@:/src"
+
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed"
 	exit 1

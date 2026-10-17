@@ -298,6 +298,63 @@ static bool remountOne(const std::string& path, const mnt::mount_t& mpt) {
 	return true;
 }
 
+/* A mount as /proc/self/mountinfo lists it. */
+struct MountInfo {
+	std::string path;
+};
+
+/* Decodes the octal escapes, such as \040 for a space, in a mountinfo path. */
+static std::string unescapeMountInfoPath(const std::string& path) {
+	auto octal = [&](size_t i) { return path[i] >= '0' && path[i] <= '7'; };
+	std::string out;
+	out.reserve(path.size());
+	for (size_t i = 0; i < path.size(); i++) {
+		if (path[i] == '\\' && i + 3 < path.size() && octal(i + 1) && octal(i + 2) &&
+		    octal(i + 3)) {
+			out.push_back((char)(((path[i + 1] - '0') << 6) |
+					     ((path[i + 2] - '0') << 3) | (path[i + 3] - '0')));
+			i += 3;
+		} else {
+			out.push_back(path[i]);
+		}
+	}
+	return out;
+}
+
+/* Reads the mounts at or below the canonical path from /proc/self/mountinfo. */
+static bool readMountsAtOrBelow(const std::string& path, std::vector<MountInfo>* mounts) {
+	FILE* f = fopen("/proc/self/mountinfo", "re");
+	if (f == nullptr) {
+		PLOG_W("fopen('/proc/self/mountinfo')");
+		return false;
+	}
+	defer {
+		fclose(f);
+	};
+
+	/* Field 5 (0-indexed 4) is the mount point. */
+	const std::string prefix = path == "/" ? path : path + "/";
+	char* line = nullptr;
+	size_t len = 0;
+	ssize_t n;
+	while ((n = getline(&line, &len, f)) != -1) {
+		std::vector<std::string> fields = util::strSplit(std::string(line, n), ' ');
+		if (fields.size() < 5) {
+			continue;
+		}
+		std::string mp = unescapeMountInfoPath(fields[4]);
+		if (mp == path || mp.compare(0, prefix.size(), prefix) == 0) {
+			mounts->push_back({mp});
+		}
+	}
+	free(line);
+	if (ferror(f)) {
+		PLOG_W("reading '/proc/self/mountinfo'");
+		return false;
+	}
+	return true;
+}
+
 static std::string normalizeMountPath(const std::string& path) {
 	/* mountinfo reports canonical paths, without repeated or trailing slashes. */
 	std::string normalized;
@@ -344,47 +401,14 @@ bool remountPt(mnt::mount_t& mpt, const std::string& root_dir) {
 	 * attributes with mount_setattr(AT_RECURSIVE).
 	 */
 	if (mpt.flags & MS_REC) {
-		FILE* f = fopen("/proc/self/mountinfo", "re");
-		if (f == nullptr) {
-			PLOG_W("fopen('/proc/self/mountinfo')");
+		std::vector<MountInfo> mounts;
+		if (!readMountsAtOrBelow(dst_path, &mounts)) {
 			return false;
 		}
-
-		char* line = nullptr;
-		size_t len = 0;
-		const std::string prefix = dst_path + "/";
-		bool success = true;
-		while (getline(&line, &len, f) != -1) {
-			/* mountinfo field 5 (0-indexed 4) is the mount point */
-			char* p = line;
-			for (int i = 0; i < 4 && p != nullptr; i++) {
-				p = strchr(p, ' ');
-				if (p != nullptr) {
-					p++;
-				}
+		for (const auto& m : mounts) {
+			if (m.path != dst_path && !remountOne(m.path, mpt)) {
+				return false;
 			}
-			if (p == nullptr) {
-				continue;
-			}
-			char* endp = strchr(p, ' ');
-			if (endp == nullptr) {
-				continue;
-			}
-			std::string mp(p, endp - p);
-			if (mp != dst_path && mp.compare(0, prefix.size(), prefix) == 0 &&
-			    !remountOne(mp, mpt)) {
-				success = false;
-				break;
-			}
-		}
-		if (ferror(f)) {
-			PLOG_W("reading '/proc/self/mountinfo'");
-			success = false;
-		}
-		free(line);
-		fclose(f);
-		if (!success) {
-			return false;
 		}
 	}
 	return true;
