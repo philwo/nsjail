@@ -160,6 +160,10 @@ test-cmdline: $(BIN)
 	$(call run_test, ./nsjail --rlimit_cpu 1.5 --help > /dev/null, 255)
 	$(call run_test, ./nsjail --time_limit 0x10 --cgroup_mem_swap_max=-1 --user 1000:1000:1 --help > /dev/null, 0)
 
+.PHONY: test-mnt
+test-mnt: $(BIN)
+	$(call run_test, ./tests/mnt.sh, 0)
+
 .PHONY: test test-newapi-recursive-readonly
 # Requires Linux >= 6.3 and mount privileges. Exit 77 is a capability skip.
 test-newapi-recursive-readonly: $(BIN)
@@ -167,7 +171,7 @@ test-newapi-recursive-readonly: $(BIN)
 	  if [ "$$ret" -eq 77 ]; then echo "SKIP: new mount API integration test"; \
 	  elif [ "$$ret" -ne 0 ]; then exit "$$ret"; fi
 
-test: $(BIN) $(TEST_BINS) test-cmdline test-newapi-recursive-readonly
+test: $(BIN) $(TEST_BINS) test-cmdline test-newapi-recursive-readonly test-mnt
 	$(call run_test, ./tests/nstun_buffer_budget_test, 0)
 	$(call run_test, ./tests/nstun_policy_test, 0)
 	$(call run_test, ./tests/nstun_ip_test, 0)
