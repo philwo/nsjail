@@ -158,6 +158,9 @@ test-cmdline: $(BIN)
 	$(call run_test, ./nsjail --user 1000:1000:1.5 --help > /dev/null, 255)
 	$(call run_test, ./nsjail --rlimit_cpu 1.5 --help > /dev/null, 255)
 	$(call run_test, ./nsjail --time_limit 0x10 --cgroup_mem_swap_max=-1 --user 1000:1000:1 --help > /dev/null, 0)
+	# --- Config file parsing ---
+	$(call run_test, ! ./nsjail --config configs/bash-with-fake-geteuid.json --help 2>&1 > /dev/null | grep ., 0)
+	$(call run_test, ./nsjail --config tests/invalid-field.cfg --help 2>&1 | grep -q 'invalid-field.cfg.:3:8: Message type', 0)
 
 .PHONY: test test-newapi-recursive-readonly
 # Requires Linux >= 6.3 and mount privileges. Exit 77 is a capability skip.

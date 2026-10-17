@@ -22,6 +22,7 @@
 #include "config.h"
 
 #include <fcntl.h>
+#include <google/protobuf/io/tokenizer.h>
 #include <google/protobuf/io/zero_copy_stream_impl.h>
 #include <google/protobuf/text_format.h>
 #include <google/protobuf/util/json_util.h>
@@ -31,7 +32,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include <list>
 #include <limits>
 #include <string>
 
@@ -146,27 +146,35 @@ static bool parseInternal(nsj_t* nsj, const nsjail::NsJailConfig& njc) {
 	return true;
 }
 
-#if defined(GOOGLE_PROTOBUF_VERSION) && GOOGLE_PROTOBUF_VERSION < 4000000
-#define NSJAIL_HAS_PROTOBUF_LOG_HANDLER 1
+/* Logs TextProto parse errors with the config file's name and position */
+class TextProtoErrorCollector : public google::protobuf::io::ErrorCollector {
+       public:
+	explicit TextProtoErrorCollector(const char* file) : file_(file) {
+	}
+
+/* protobuf < 22 (C++ 4.22) reports errors through AddError() instead of RecordError() */
+#if defined(GOOGLE_PROTOBUF_VERSION) && GOOGLE_PROTOBUF_VERSION < 4022000
+	void AddError(int line, int column, const std::string& message) override {
+		logError(line, column, message);
+	}
 #else
-#define NSJAIL_HAS_PROTOBUF_LOG_HANDLER 0
+	void RecordError(int line, int column, absl::string_view message) override {
+		logError(line, column, std::string(message));
+	}
 #endif
 
-static std::list<std::string> error_messages;
-
-#if NSJAIL_HAS_PROTOBUF_LOG_HANDLER
-static void logHandler(
-    google::protobuf::LogLevel level, const char* filename, int line, const std::string& message) {
-	error_messages.push_back(message);
-}
-#endif /* NSJAIL_HAS_PROTOBUF_LOG_HANDLER */
-
-static void flushLog() {
-	for (auto message : error_messages) {
-		LOG_W("ProtoTextFormat: %s", message.c_str());
+       private:
+	void logError(int line, int column, const std::string& message) {
+		/* Errors about the whole message, such as missing required fields, have line -1 */
+		if (line < 0) {
+			LOG_E("%s: %s", QC(file_), message.c_str());
+			return;
+		}
+		LOG_E("%s:%d:%d: %s", QC(file_), line + 1, column + 1, message.c_str());
 	}
-	error_messages.clear();
-}
+
+	const char* file_;
+};
 
 bool parseFile(nsj_t* nsj, const char* file) {
 	LOG_D("Parsing configuration from %s", QC(file));
@@ -181,48 +189,33 @@ bool parseFile(nsj_t* nsj, const char* file) {
 		return false;
 	}
 
-	/* Use static so we can get c_str() pointers, and copy them into the nsjconf struct */
-	static nsjail::NsJailConfig json_nsc;
-	static nsjail::NsJailConfig text_nsc;
-
-#if NSJAIL_HAS_PROTOBUF_LOG_HANDLER
-	google::protobuf::SetLogHandler(logHandler);
-#endif /* NSJAIL_HAS_PROTOBUF_LOG_HANDLER */
-	auto json_status = google::protobuf::util::JsonStringToMessage(conf, &json_nsc);
-	bool text_parsed = google::protobuf::TextFormat::ParseFromString(conf, &text_nsc);
-
-	if (json_status.ok() && text_parsed) {
-		LOG_W("Config file %s ambiguously parsed as TextProto and ProtoJSON", QC(file));
-		return false;
-	}
-
-	if (!json_status.ok() && !text_parsed) {
-		LOG_E("Config file %s failed to parse as either TextProto or ProtoJSON", QC(file));
-		flushLog();
-		LOG_W("ProtoJSON parse status: '%s'", json_status.ToString().c_str());
-		return false;
-	}
-
-	if (json_status.ok() && !text_parsed) {
-		if (!parseInternal(nsj, json_nsc)) {
-			LOG_W("Couldn't parse the ProtoJSON from %s", QC(file));
+	/* A ProtoJSON message is an object, and a TextProto message can't start with '{' */
+	nsjail::NsJailConfig njc;
+	size_t start = conf.find_first_not_of(" \t\r\n");
+	if (start != std::string::npos && conf[start] == '{') {
+		auto status = google::protobuf::util::JsonStringToMessage(conf, &njc);
+		if (!status.ok()) {
+			LOG_E("Couldn't parse config file %s as ProtoJSON: %s", QC(file),
+			    status.ToString().c_str());
 			return false;
 		}
-		LOG_D(
-		    "Parsed JSON config from %s:\n'%s'", QC(file), json_nsc.DebugString().c_str());
-		return true;
-	}
-
-	if (text_parsed && !json_status.ok()) {
-		if (!parseInternal(nsj, text_nsc)) {
-			LOG_W("Couldn't parse the TextProto from %s", QC(file));
+	} else {
+		TextProtoErrorCollector errors(file);
+		google::protobuf::TextFormat::Parser parser;
+		parser.RecordErrorsTo(&errors);
+		if (!parser.ParseFromString(conf, &njc)) {
+			LOG_E("Couldn't parse config file %s as TextProto", QC(file));
 			return false;
 		}
-		LOG_D("Parsed TextProto config from %s:\n'%s'", QC(file),
-		    text_nsc.DebugString().c_str());
-		return true;
 	}
-	return false;
+
+	/* Apply the config */
+	if (!parseInternal(nsj, njc)) {
+		LOG_W("Couldn't apply the config from %s", QC(file));
+		return false;
+	}
+	LOG_D("Parsed config from %s:\n'%s'", QC(file), njc.DebugString().c_str());
+	return true;
 }
 
 }  // namespace config
