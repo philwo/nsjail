@@ -234,6 +234,8 @@ endif
 	$(call run_test, ./nsjail $(OLD_EF) -q -Mo --rw --chroot / --user 99999 --group 99999 -- /bin/bash -c 'touch $(HOME)/nsjail_test && exit 77', 77)
 	$(call run_test, ./nsjail $(OLD_EF) -q -Mo --chroot / --user 99999 --group 99999 -- /bin/bash -c 'touch $(HOME)/nsjail_test || exit 77', 77)
 	$(call run_test, rm -f $(HOME)/nsjail_test, 0)
+	$(call run_test, ./nsjail $(OLD_EF) --config tests/root-rw.cfg -q -- /bin/bash -c 'touch $(HOME)/nsjail_test && exit 77' < /dev/null, 77)
+	$(call run_test, rm -f $(HOME)/nsjail_test, 0)
 	$(call run_test, ./nsjail $(OLD_EF) -q -Mo --chroot / -m none:/tmp:tmpfs --user 99999 --group 99999 -- /bin/bash -c 'touch /tmp/nsjail_test && rm -f /tmp/nsjail_test', 0)
 	$(call run_test, ./nsjail $(OLD_EF) -q -Mo --chroot / -m none:/tmp:tmpfs:rw --user 99999 --group 99999 -- /bin/bash -c 'touch /tmp/nsjail_test && rm -f /tmp/nsjail_test', 0)
 	$(call run_test, ./nsjail $(OLD_EF) -q -Mo --chroot / -m none:/tmp:tmpfs:ro --user 99999 --group 99999 -- /bin/bash -c 'touch /tmp/nsjail_test || exit 77', 77)
@@ -262,6 +264,8 @@ endif
 	# --- --experimental_mnt=new ---
 	$(call run_test, ./nsjail $(NEW_EF) -q -Mo --rw --chroot / --user 99999 --group 99999 -- /bin/bash -c 'touch $(HOME)/nsjail_test && exit 77', 77)
 	$(call run_test, ./nsjail $(NEW_EF) -q -Mo --chroot / --user 99999 --group 99999 -- /bin/bash -c 'touch $(HOME)/nsjail_test || exit 77', 77)
+	$(call run_test, rm -f $(HOME)/nsjail_test, 0)
+	$(call run_test, ./nsjail $(NEW_EF) --config tests/root-rw.cfg -q -- /bin/bash -c 'touch $(HOME)/nsjail_test && exit 77' < /dev/null, 77)
 	$(call run_test, rm -f $(HOME)/nsjail_test, 0)
 	$(call run_test, ./nsjail $(NEW_EF) -q -Mo --chroot / -m none:/tmp:tmpfs --user 99999 --group 99999 -- /bin/bash -c 'touch /tmp/nsjail_test && rm -f /tmp/nsjail_test', 0)
 	$(call run_test, ./nsjail $(NEW_EF) -q -Mo --chroot / -m none:/tmp:tmpfs:rw --user 99999 --group 99999 -- /bin/bash -c 'touch /tmp/nsjail_test && rm -f /tmp/nsjail_test', 0)

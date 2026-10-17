@@ -815,7 +815,7 @@ std::unique_ptr<std::string> buildMountTree(nsj_t* nsj, std::vector<mnt::mount_t
 		}
 	}
 
-	if (!nsj->is_root_rw) {
+	if (!nsj->njc.root_rw()) {
 		struct mount_attr ro_attr = {};
 		ro_attr.attr_set = MOUNT_ATTR_RDONLY;
 		if (util::syscall(__NR_mount_setattr, (uintptr_t)root_fd, (uintptr_t)"",

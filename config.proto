@@ -212,6 +212,8 @@ message NsJailConfig {
 	/* Mount points inside the jail. See the description for 'msg MountPt'
 	   for more */
 	repeated MountPt mount = 67;
+	/* Keep the jail's / R/W instead of remounting it R/O after all mounts */
+	optional bool root_rw = 102 [default = false];
 
 	/* Kafel seccomp-bpf policy file or a string:
 	   Homepage of the project: https://github.com/google/kafel */

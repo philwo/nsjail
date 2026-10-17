@@ -467,7 +467,7 @@ static bool setupMounts(nsj_t* nsj) {
 		p->set_src(nsj->chroot);
 		p->set_dst("/");
 		p->set_is_bind(true);
-		p->set_rw(nsj->is_root_rw);
+		p->set_rw(nsj->njc.root_rw());
 		p->set_is_dir(true);
 		/* Insert at the beginning */
 		for (int i = nsj->njc.mount_size() - 1; i > 0; i--) {
@@ -529,7 +529,6 @@ std::string parseMACVlanMode(const char* optarg) {
 std::unique_ptr<nsj_t> parseArgs(int argc, char* argv[]) {
 	std::unique_ptr<nsj_t> nsj(new nsj_t);
 
-	nsj->is_root_rw = false;
 	nsj->is_proc_rw = false;
 	nsj->proc_path = "/proc";
 	nsj->orig_uid = getuid();
@@ -784,7 +783,7 @@ std::unique_ptr<nsj_t> parseArgs(int argc, char* argv[]) {
 			nsj->njc.set_no_pivotroot(true);
 			break;
 		case 0x0601:
-			nsj->is_root_rw = true;
+			nsj->njc.set_root_rw(true);
 			break;
 		case 0x0603:
 			nsj->njc.set_mount_proc(false);
