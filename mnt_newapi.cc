@@ -746,7 +746,9 @@ std::unique_ptr<std::string> buildMountTree(nsj_t* nsj, std::vector<mnt::mount_t
 	for (const auto& proto : nsj->njc.mount()) {
 		mount_t mpt = prepareMountPoint(proto);
 
-		if (!mountSinglePointAt(&mpt, root_fd >= 0 ? root_fd : staging_fd, staging_fd)) {
+		int jail_root_fd = root_fd >= 0 ? root_fd : staging_fd;
+		if (!mnt::mayCreateDst(jail_root_fd, mpt, *mounted_mpts) ||
+		    !mountSinglePointAt(&mpt, jail_root_fd, staging_fd)) {
 			if (mpt.mpt->mandatory()) {
 				LOG_E("Failed to mount mandatory point: %s", QC(mpt.dst));
 				return nullptr;

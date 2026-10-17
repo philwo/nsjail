@@ -516,7 +516,17 @@ std::unique_ptr<std::string> buildMountTree(nsj_t* nsj, std::vector<mnt::mount_t
 	for (const auto& proto : nsj->njc.mount()) {
 		mount_t mpt = prepareMountPoint(proto);
 
-		if (!mountSinglePoint(&mpt, destdir->c_str(), tmpdir->c_str())) {
+		/* Open the jail root as it is now: a "/" entry replaces the root tmpfs. */
+		int root_fd =
+		    TEMP_FAILURE_RETRY(open(destdir->c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC));
+		if (root_fd == -1) {
+			PLOG_E("open(%s)", QC(*destdir));
+			return nullptr;
+		}
+		bool may_create = mnt::mayCreateDst(root_fd, mpt, *mounted_mpts);
+		close(root_fd);
+
+		if (!may_create || !mountSinglePoint(&mpt, destdir->c_str(), tmpdir->c_str())) {
 			if (mpt.mpt->mandatory()) {
 				LOG_E("Failed to mount mandatory point: %s", QC(mpt.dst));
 				return nullptr;
