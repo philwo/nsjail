@@ -36,11 +36,13 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -266,6 +268,7 @@ static void addProc(nsj_t* nsj, pid_t pid, int sock) {
 	pids_t p;
 
 	p.start = time(NULL);
+	p.start_usec = util::timeUsec();
 	p.remote_txt = net::connToText(sock, /* remote= */ true, &p.remote_addr);
 	p.pasta_pid = -1;
 
@@ -433,16 +436,22 @@ int reapProc(nsj_t* nsj) {
 		rv = reapProc(nsj, si.si_pid);
 	}
 
-	time_t now = time(NULL);
+	/* Kill jails that reached their time limit, and find the next deadline */
+	const uint64_t limit_usec = nsj->njc.time_limit() * 1000000ULL;
+	const uint64_t now_usec = util::timeUsec();
+	uint64_t next_deadline_usec = UINT64_MAX;
 	for (const auto& p : nsj->pids) {
 		if (nsj->njc.time_limit() == 0) {
 			continue;
 		}
 		pid_t pid = p.first;
-		time_t diff = now - p.second.start;
-		if ((uint64_t)diff >= nsj->njc.time_limit()) {
-			LOG_I("pid=%d run time >= time limit (%ld >= %" PRIu64 ") (%s). Killing it",
-			    pid, (long)diff, (uint64_t)nsj->njc.time_limit(),
+		uint64_t run_usec = now_usec - p.second.start_usec;
+		if (run_usec < limit_usec) {
+			next_deadline_usec = std::min(next_deadline_usec, limit_usec - run_usec);
+		} else {
+			LOG_I("pid=%d run time >= time limit (%" PRIu64 " >= %" PRIu64 ") (%s). "
+			      "Killing it",
+			    pid, run_usec / UINT64_C(1000000), (uint64_t)nsj->njc.time_limit(),
 			    p.second.remote_txt.c_str());
 			/*
 			 * Probably a kernel bug - some processes cannot be killed with KILL if
@@ -452,6 +461,17 @@ int reapProc(nsj_t* nsj) {
 			LOG_D("Sent SIGCONT to pid=%d", pid);
 			kill(pid, SIGKILL);
 			LOG_D("Sent SIGKILL to pid=%d", pid);
+		}
+	}
+
+	/* The timer ticks once a second, so fire it early for a deadline before the next tick */
+	if (next_deadline_usec < 1000000ULL) {
+		struct itimerval it = {
+		    .it_interval = {.tv_sec = 1, .tv_usec = 0},
+		    .it_value = {.tv_sec = 0, .tv_usec = (suseconds_t)next_deadline_usec},
+		};
+		if (setitimer(ITIMER_REAL, &it, NULL) == -1) {
+			PLOG_W("setitimer(ITIMER_REAL)");
 		}
 	}
 	return rv;

@@ -55,6 +55,8 @@ static const int nssigs[] = {
 struct pids_t {
 	pid_t pid;
 	time_t start;
+	/* Monotonic start time, for the time limit */
+	uint64_t start_usec;
 	int pidfd;
 	std::string remote_txt;
 	struct sockaddr_in6 remote_addr;
