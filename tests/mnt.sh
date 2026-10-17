@@ -114,6 +114,10 @@ check covered_sub "$sub"'; mkdir "$src/sub/inner"; mount -t tmpfs none "$src/sub
 check unreachable_sub 'mkdir -m 700 "$src/locked" "$src/locked/sub"
 	mount -t tmpfs none "$src/locked/sub"; chown 1:1 "$src/locked"' "/src=ro" "/src" -- -R "@SRC@:/src"
 
+# nsjail's user namespace locks the nosuid flag of the chroot's filesystem.
+check chroot_on_nosuid 'mount -t tmpfs -o nosuid none "$src"; '"$chroot_dirs" "/=ro" "/" \
+	-- --chroot "@SRC@"
+
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed"
 	exit 1

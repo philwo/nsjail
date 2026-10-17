@@ -252,7 +252,7 @@ static bool mountSinglePoint(mount_t* mpt, const char* newroot, const char* tmpd
 	return true;
 }
 
-static unsigned long computeRemountFlags(const mount_t& mpt, const struct statvfs& vfs) {
+static unsigned long computeRemountFlags(unsigned long mnt_flags, const struct statvfs& vfs) {
 	struct {
 		const unsigned long mount_flag;
 		const unsigned long vfs_flag;
@@ -272,7 +272,7 @@ static unsigned long computeRemountFlags(const mount_t& mpt, const struct statvf
 	    MS_LAZYTIME | MS_MANDLOCK | MS_NOATIME | MS_NODEV | MS_NODIRATIME | MS_NOEXEC |
 	    MS_NOSUID | MS_RELATIME | MS_RDONLY | MS_SYNCHRONOUS | MS_NOSYMFOLLOW;
 
-	unsigned long flags = MS_REMOUNT | MS_BIND | (mpt.flags & per_mountpoint_flags);
+	unsigned long flags = MS_REMOUNT | MS_BIND | (mnt_flags & per_mountpoint_flags);
 	for (const auto& i : mountPairs) {
 		if (vfs.f_flag & i.vfs_flag) {
 			flags |= i.mount_flag;
@@ -281,14 +281,15 @@ static unsigned long computeRemountFlags(const mount_t& mpt, const struct statvf
 	return flags;
 }
 
-static bool remountOne(const std::string& path, const mnt::mount_t& mpt) {
+/* Remounts path with mnt_flags plus the nosuid, nodev, noexec and atime flags it has. */
+static bool remountOne(const std::string& path, unsigned long mnt_flags) {
 	struct statvfs vfs;
 	if (TEMP_FAILURE_RETRY(statvfs(path.c_str(), &vfs)) == -1) {
 		PLOG_W("statvfs('%s')", path.c_str());
 		return false;
 	}
 
-	unsigned long flags = computeRemountFlags(mpt, vfs);
+	unsigned long flags = computeRemountFlags(mnt_flags, vfs);
 	LOG_D("Remounting '%s' with flags: %s", path.c_str(), mnt::flagsToStr(flags).c_str());
 
 	if (mount(path.c_str(), path.c_str(), nullptr, flags, nullptr) == -1) {
@@ -403,7 +404,7 @@ bool remountPt(mnt::mount_t& mpt, const std::string& root_dir) {
 	}
 	dst_path = normalizeMountPath(canonical_dst_path);
 	free(canonical_dst_path);
-	if (!remountOne(dst_path, mpt)) {
+	if (!remountOne(dst_path, mpt.flags)) {
 		return false;
 	}
 
@@ -424,7 +425,7 @@ bool remountPt(mnt::mount_t& mpt, const std::string& root_dir) {
 		}
 		for (const auto& m : mounts) {
 			if (m.path != dst_path && !isUnreachable(m.path, m.id) &&
-			    !remountOne(m.path, mpt)) {
+			    !remountOne(m.path, mpt.flags)) {
 				return false;
 			}
 		}
@@ -479,12 +480,9 @@ std::unique_ptr<std::string> buildMountTree(nsj_t* nsj, std::vector<mnt::mount_t
 		mounted_mpts->push_back(mpt);
 	}
 
-	if (!nsj->is_root_rw) {
-		if (mount(destdir->c_str(), destdir->c_str(), nullptr,
-			MS_REMOUNT | MS_BIND | MS_RDONLY, nullptr) == -1) {
-			PLOG_E("mount('%s', MS_REMOUNT|MS_BIND|MS_RDONLY)", destdir->c_str());
-			return nullptr;
-		}
+	if (!nsj->is_root_rw && !remountOne(*destdir, MS_RDONLY)) {
+		LOG_E("Failed to make the root read-only");
+		return nullptr;
 	}
 
 	if (umount2(tmpdir->c_str(), MNT_DETACH) == -1) {
