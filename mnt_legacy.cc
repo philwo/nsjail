@@ -30,6 +30,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -62,6 +63,7 @@ static mount_t prepareMountPoint(const nsjail::MountPt& proto) {
 	    .is_dir = true,
 	    .mounted = false,
 	    .fd = -1,
+	    .src_rdonly_paths = {},
 	};
 
 	if (!proto.prefix_src_env().empty()) {
@@ -319,6 +321,7 @@ static bool isUnreachable(const std::string& path, uint64_t mnt_id) {
 struct MountInfo {
 	uint64_t id;
 	std::string path;
+	bool rdonly;
 };
 
 /* Decodes the octal escapes, such as \040 for a space, in a mountinfo path. */
@@ -350,19 +353,23 @@ static bool readMountsAtOrBelow(const std::string& path, std::vector<MountInfo>*
 		fclose(f);
 	};
 
-	/* Field 1 (0-indexed 0) is the mount ID, field 5 (0-indexed 4) the mount point. */
+	/*
+	 * Field 1 (0-indexed 0) is the mount ID, field 5 (0-indexed 4) the mount point,
+	 * and field 6 (0-indexed 5) the per-mount options, starting with "ro" or "rw".
+	 */
 	const std::string prefix = path == "/" ? path : path + "/";
 	char* line = nullptr;
 	size_t len = 0;
 	ssize_t n;
 	while ((n = getline(&line, &len, f)) != -1) {
 		std::vector<std::string> fields = util::strSplit(std::string(line, n), ' ');
-		if (fields.size() < 5) {
+		if (fields.size() < 6) {
 			continue;
 		}
 		std::string mp = unescapeMountInfoPath(fields[4]);
 		if (mp == path || mp.compare(0, prefix.size(), prefix) == 0) {
-			mounts->push_back({strtoull(fields[0].c_str(), nullptr, 10), mp});
+			mounts->push_back({strtoull(fields[0].c_str(), nullptr, 10), mp,
+			    util::strSplit(fields[5], ',')[0] == "ro"});
 		}
 	}
 	free(line);
@@ -389,22 +396,60 @@ static std::string normalizeMountPath(const std::string& path) {
 	return normalized;
 }
 
+/* Resolves the jail path dst under root_dir to its path in mountinfo. */
+static bool canonicalDstPath(
+    const std::string& root_dir, const std::string& dst, std::string* dst_path) {
+	const char* relative_dst = util::stripLeadingSlashes(dst.c_str());
+	std::string path =
+	    normalizeMountPath(relative_dst[0] ? root_dir + "/" + relative_dst : root_dir);
+	char* canonical_dst_path = realpath(path.c_str(), nullptr);
+	if (!canonical_dst_path) {
+		PLOG_W("realpath('%s')", path.c_str());
+		return false;
+	}
+	*dst_path = normalizeMountPath(canonical_dst_path);
+	free(canonical_dst_path);
+	return true;
+}
+
+/*
+ * Records which mounts of a bind are read-only in its source, before any remount
+ * changes them, so that a writable bind doesn't make them writable.
+ */
+static bool recordSrcRdonly(mnt::mount_t* mpt, const std::string& root_dir) {
+	std::string dst_path;
+	if (!canonicalDstPath(root_dir, mpt->dst, &dst_path)) {
+		return false;
+	}
+	std::vector<MountInfo> mounts;
+	if (!readMountsAtOrBelow(dst_path, &mounts)) {
+		return false;
+	}
+	for (const auto& m : mounts) {
+		if (m.rdonly) {
+			mpt->src_rdonly_paths.push_back(m.path);
+		}
+	}
+	return true;
+}
+
+/* Returns the entry's flags for the mount at path, read-only if its source is. */
+static unsigned long remountFlags(const mnt::mount_t& mpt, const std::string& path) {
+	const auto& paths = mpt.src_rdonly_paths;
+	bool src_rdonly = std::find(paths.begin(), paths.end(), path) != paths.end();
+	return mpt.flags | (src_rdonly ? (unsigned long)MS_RDONLY : 0UL);
+}
+
 bool remountPt(mnt::mount_t& mpt, const std::string& root_dir) {
 	if (!mpt.mounted || mpt.mpt->is_symlink()) {
 		return true;
 	}
 
-	const char* relative_dst = util::stripLeadingSlashes(mpt.dst.c_str());
-	std::string dst_path = normalizeMountPath(
-	    relative_dst[0] ? root_dir + "/" + relative_dst : root_dir);
-	char* canonical_dst_path = realpath(dst_path.c_str(), nullptr);
-	if (!canonical_dst_path) {
-		PLOG_W("realpath('%s')", dst_path.c_str());
+	std::string dst_path;
+	if (!canonicalDstPath(root_dir, mpt.dst, &dst_path)) {
 		return false;
 	}
-	dst_path = normalizeMountPath(canonical_dst_path);
-	free(canonical_dst_path);
-	if (!remountOne(dst_path, mpt.flags)) {
+	if (!remountOne(dst_path, remountFlags(mpt, dst_path))) {
 		return false;
 	}
 
@@ -425,7 +470,7 @@ bool remountPt(mnt::mount_t& mpt, const std::string& root_dir) {
 		}
 		for (const auto& m : mounts) {
 			if (m.path != dst_path && !isUnreachable(m.path, m.id) &&
-			    !remountOne(m.path, mpt.flags)) {
+			    !remountOne(m.path, remountFlags(mpt, m.path))) {
 				return false;
 			}
 		}
@@ -476,6 +521,10 @@ std::unique_ptr<std::string> buildMountTree(nsj_t* nsj, std::vector<mnt::mount_t
 				LOG_E("Failed to mount mandatory point: %s", QC(mpt.dst));
 				return nullptr;
 			}
+		}
+		if (mpt.mounted && (mpt.flags & MS_BIND) && !recordSrcRdonly(&mpt, *destdir)) {
+			LOG_E("Failed to read the mounts of %s", QC(mpt.dst));
+			return nullptr;
 		}
 		mounted_mpts->push_back(mpt);
 	}

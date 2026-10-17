@@ -591,6 +591,7 @@ static mount_t prepareMountPoint(const nsjail::MountPt& proto) {
 	    .is_dir = true,
 	    .mounted = false,
 	    .fd = -1,
+	    .src_rdonly_paths = {},
 	};
 
 	if (!proto.prefix_src_env().empty()) {

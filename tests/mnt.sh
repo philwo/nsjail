@@ -118,6 +118,14 @@ check unreachable_sub 'mkdir -m 700 "$src/locked" "$src/locked/sub"
 check chroot_on_nosuid 'mount -t tmpfs -o nosuid none "$src"; '"$chroot_dirs" "/=ro" "/" \
 	-- --chroot "@SRC@"
 
+# A writable tmpfs with a read-only bind of itself on top. nsjail's user
+# namespace locks the read-only flag, but the filesystem stays writable.
+ro_sub='mkdir "$src/sub"; mount -t tmpfs none "$src/sub"; mount -o remount,bind,ro "$src/sub"'
+check rw_bind_locked_ro_sub "$ro_sub" "/src=rw /src/sub=ro" "/src,/src/sub" -- -B "@SRC@:/src"
+# Without a user namespace, nothing locks the read-only flags.
+check rw_bind_ro_sub_no_userns "$ro_sub" "/src=rw /src/sub=ro" "/src,/src/sub" \
+	-- --disable_clone_newuser -B "@SRC@:/src"
+
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed"
 	exit 1
