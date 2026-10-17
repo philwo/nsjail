@@ -806,7 +806,7 @@ std::unique_ptr<nsj_t> parseArgs(int argc, char* argv[]) {
 			} else if (strcasecmp(optarg, "auto") == 0) {
 				nsj->mnt_newapi = mnt::newapi::isAvailable();
 			} else {
-				LOG_E("--experimental_mnt must be 'new', 'auto', or 'default'");
+				LOG_E("--experimental_mnt must be 'new', 'old', or 'auto'");
 				return nullptr;
 			}
 			break;
