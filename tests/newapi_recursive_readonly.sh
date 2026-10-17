@@ -87,12 +87,12 @@ done
 
 # A later writable recursive bind must be stageable beneath a read-only bind.
 # Its independently cloned nested mounts must remain writable (not inherited
-# from the earlier read-only parent). The destination intentionally does not
-# exist in the source before nsjail constructs the mount tree.
+# from the earlier read-only parent). nsjail doesn't create mount points in a
+# read-only bind, so the destination must exist in the source.
 mkdir "$child/nested"
 mount -t tmpfs -o size=4m tmpfs "$child/nested"
 printf 'child\n' > "$child/nested/nested-file"
-test ! -e "$src/newchild"
+mkdir "$src/newchild"
 "$nsjail_bin" --experimental_mnt=new -q -Mo --rw \
     -R /usr:/usr -s /usr/lib:/lib -s /usr/lib64:/lib64 \
     --disable_clone_newuser --disable_clone_newnet \

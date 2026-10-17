@@ -32,7 +32,10 @@ message MountPt {
 	optional string prefix_src_env = 2 [default = ""];
 	/* If specified, contains buffer that will be written to the dst file */
 	optional bytes src_content = 3 [default = ""];
-	/* Mount point inside jail */
+	/* Mount point inside jail. nsjail creates it and its missing parents only on
+	   its own tmpfs mounts (the jail's root and tmpfs mounts) and in the source
+	   of a writable bind other than "/". Inside a read-only bind, a --chroot
+	   directory or another filesystem, it must already exist. */
 	required string dst = 4 [default = ""];
 	/* Should 'dst' path be prefixed with this envar? */
 	optional string prefix_dst_env = 5 [default = ""];

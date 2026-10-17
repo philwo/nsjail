@@ -77,6 +77,16 @@ bool initNs(nsj_t* nsj);
 std::unique_ptr<std::string> findWorkDir(nsj_t* nsj, const char* purpose);
 const std::string describeMountPt(const nsjail::MountPt& mpt);
 const std::string flagsToStr(unsigned long flags);
+/* Whether mpt is a tmpfs that nsjail creates for the jail, not a bind or another filesystem. */
+bool isOwnTmpfs(const mount_t& mpt);
+/*
+ * Whether nsjail may create the missing part of mpt's destination under the jail
+ * root at root_fd, given the entries mounted before it. nsjail creates files only
+ * on its own tmpfs mounts, the jail's root and tmpfs entries, and on writable binds
+ * other than "/", because elsewhere they would change a filesystem from outside the
+ * jail that the jail may not change itself, such as a read-only bind's source.
+ */
+bool mayCreateDst(int root_fd, const mount_t& mpt, const std::vector<mount_t>& mounted);
 
 }  // namespace mnt
 

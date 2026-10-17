@@ -40,6 +40,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -134,6 +135,93 @@ const std::string describeMountPt(const nsjail::MountPt& mpt) {
 	}
 
 	return descr;
+}
+
+/* Splits a jail path into its components, without empty ones. */
+static std::vector<std::string> pathComponents(const std::string& path) {
+	std::vector<std::string> components;
+	for (auto& c : util::strSplit(path, '/')) {
+		if (!c.empty()) {
+			components.push_back(std::move(c));
+		}
+	}
+	return components;
+}
+
+bool isOwnTmpfs(const mount_t& mpt) {
+	return !(mpt.flags & MS_BIND) && mpt.mpt->fstype() == "tmpfs";
+}
+
+bool mayCreateDst(int root_fd, const mount_t& mpt, const std::vector<mount_t>& mounted) {
+	/* Find how much of the destination exists, without following symlinks. */
+	const std::vector<std::string> dst = pathComponents(mpt.dst);
+	size_t existing = 0;
+	int dir_fd = root_fd;
+	for (; existing < dst.size(); existing++) {
+		int fd = TEMP_FAILURE_RETRY(
+		    openat(dir_fd, dst[existing].c_str(), O_PATH | O_NOFOLLOW | O_CLOEXEC));
+		int err = errno;
+		if (dir_fd != root_fd) {
+			close(dir_fd);
+		}
+		if (fd == -1) {
+			/* The mount reports other errors, such as a symlink in the path. */
+			if (err != ENOENT) {
+				return true;
+			}
+			break;
+		}
+		dir_fd = fd;
+	}
+	if (existing == dst.size()) {
+		if (dir_fd != root_fd) {
+			close(dir_fd);
+		}
+		return true;
+	}
+
+	/*
+	 * Find the entry that provides the deepest existing directory: the deepest
+	 * one whose destination contains it, and of those, the last one mounted.
+	 */
+	const mount_t* provider = nullptr;
+	size_t provider_depth = 0;
+	for (const auto& m : mounted) {
+		if (!m.mounted || m.mpt->is_symlink()) {
+			continue;
+		}
+		const std::vector<std::string> m_dst = pathComponents(m.dst);
+		if (m_dst.size() <= existing && m_dst.size() >= provider_depth &&
+		    std::equal(m_dst.begin(), m_dst.end(), dst.begin())) {
+			provider = &m;
+			provider_depth = m_dst.size();
+		}
+	}
+
+	/* Allow nsjail's own tmpfs mounts: the jail's root and tmpfs entries. */
+	if (provider == nullptr || isOwnTmpfs(*provider)) {
+		return true;
+	}
+	/*
+	 * Allow writable binds, where the jail may create files itself, except a bind
+	 * at "/", which is a --chroot directory, such as the host's root or an image.
+	 */
+	if ((provider->flags & MS_BIND) && !(provider->flags & MS_RDONLY) && provider_depth > 0) {
+		return true;
+	}
+
+	std::string dir = "/";
+	for (size_t i = 0; i < existing; i++) {
+		dir += (i ? "/" : "") + dst[i];
+	}
+	std::string from = (provider->flags & MS_BIND)
+			       ? "the bind of " + util::StrQuote(provider->src)
+			       : "a " + util::StrQuote(provider->mpt->fstype()) + " mount";
+	LOG_W("Not creating %s: %s is on %s, and nsjail creates files only on its own tmpfs "
+	      "mounts and writable binds other than /, so that it never changes a filesystem "
+	      "from outside the jail that the jail may not change itself",
+	    QC(mpt.dst), QC(dir), from.c_str());
+	return false;
 }
 
 namespace fs = std::filesystem;

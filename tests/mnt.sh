@@ -126,6 +126,53 @@ check rw_bind_locked_ro_sub "$ro_sub" "/src=rw /src/sub=ro" "/src,/src/sub" -- -
 check rw_bind_ro_sub_no_userns "$ro_sub" "/src=rw /src/sub=ro" "/src,/src/sub" \
 	-- --disable_clone_newuser -B "@SRC@:/src"
 
+# check_refused NAME SETUP -- NSJAIL_FLAGS...
+#
+# For each backend, runs SETUP in a new directory $src, then checks that nsjail,
+# started with NSJAIL_FLAGS, refuses to start and leaves the files in $src
+# unchanged. NSJAIL_FLAGS write $src as @SRC@.
+check_refused() {
+	local name=$1 setup=$2
+	shift 3
+
+	local be src before
+	for be in old new; do
+		src=$NSJAIL_MNT_TEST_DIR/$name.$be
+		mkdir -p "$src"
+		eval "$setup"
+		before=$(find "$src" | sort)
+
+		if "$NSJAIL_BIN" -Mo -q --experimental_mnt "$be" "${@//@SRC@/$src}" "${sysroot[@]}" \
+			-l "$src.log" -- /bin/true; then
+			fail "$name ($be)" "nsjail started" "$src.log"
+		elif [ "$(find "$src" | sort)" != "$before" ]; then
+			fail "$name ($be)" "nsjail changed the files in the source" "$src.log"
+		elif ! grep -q "outside the jail" "$src.log"; then
+			fail "$name ($be)" "nsjail failed for another reason" "$src.log"
+		else
+			echo "PASS: $name ($be)"
+		fi
+	done
+}
+
+# nsjail creates missing mount points only on its own tmpfs mounts (the jail's
+# root and tmpfs entries) and in writable binds other than /, where the jail may
+# create files itself. Elsewhere, creating one would modify a source that the
+# jail must not change. The writable bind's source is $src.rw, so that $src
+# stays unchanged.
+check mount_point_in_tmpfs_entry "$chroot_dirs"'; mkdir "$src/tmp"' "/tmp=rw /tmp/x=ro" \
+	"/tmp,/tmp/x" -- --chroot "@SRC@" -m none:/tmp:tmpfs:rw -R /usr:/tmp/x
+check mount_point_in_rw_bind 'mkdir "$src/a" "$src.rw"' "/src=rw /src/new=ro" "/src,/src/new" \
+	-- -B "@SRC@.rw:/src" -R "@SRC@/a:/src/new"
+check_refused mount_point_in_ro_bind 'mkdir "$src/a"' -- -R "@SRC@:/src" -B "@SRC@/a:/src/new"
+check_refused mount_point_in_rw_chroot "$chroot_dirs" \
+	-- --chroot "@SRC@" --rw -m none:/data:tmpfs:rw
+check_refused mount_point_in_submount "$sub"'; mkdir "$src/a"' \
+	-- -R "@SRC@:/src" -B "@SRC@/a:/src/sub/new"
+check_refused parents_in_bind '' -- -R "@SRC@:/src" -m none:/src/x/y:tmpfs:rw
+check_refused symlink_in_bind '' -- -R "@SRC@:/src" -s /usr:/src/link
+check_refused mount_point_in_chroot "$chroot_dirs" -- --chroot "@SRC@" -m none:/data:tmpfs:rw
+
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed"
 	exit 1
