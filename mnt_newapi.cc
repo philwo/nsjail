@@ -185,17 +185,6 @@ static bool remountWithLegacyMount(const mount_t& mpt) {
 	return true;
 }
 
-static bool openMountForRemount(mount_t* mpt, int parent_fd, const char* basename) {
-	mpt->fd = util::syscall(__NR_open_tree, (uintptr_t)parent_fd, (uintptr_t)basename,
-	    (uintptr_t)OPEN_TREE_CLOEXEC);
-	if (mpt->fd < 0) {
-		PLOG_W("open_tree(parent_fd, '%s')", basename);
-		return false;
-	}
-	mpt->mounted = true;
-	return true;
-}
-
 static bool createDirAt(int dir_fd, const char* path, mode_t mode) {
 	path = util::stripLeadingSlashes(path);
 	if (!path[0]) {
@@ -424,14 +413,15 @@ static bool mountSymlinkAt(mount_t* mpt, int parent_fd, const char* basename) {
 	return true;
 }
 
-static bool mountDynamicContentAt(mount_t* mpt, int root_fd, int parent_fd, const char* basename) {
+static bool mountDynamicContentAt(
+    mount_t* mpt, int staging_fd, int parent_fd, const char* basename) {
 	static uint64_t counter = 0;
 	std::string src_rel = ".dyn." + std::to_string(++counter);
 
 	int src_fd =
-	    openat(root_fd, src_rel.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
+	    openat(staging_fd, src_rel.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
 	if (src_fd < 0) {
-		PLOG_W("openat(root_fd, '%s', O_CREAT)", src_rel.c_str());
+		PLOG_W("openat(staging_fd, '%s', O_CREAT)", src_rel.c_str());
 		return false;
 	}
 
@@ -441,15 +431,15 @@ static bool mountDynamicContentAt(mount_t* mpt, int root_fd, int parent_fd, cons
 	if (!ok) {
 		LOG_W("Failed to write %zu bytes for dynamic content '%s'", content.length(),
 		    basename);
-		unlinkat(root_fd, src_rel.c_str(), 0);
+		unlinkat(staging_fd, src_rel.c_str(), 0);
 		return false;
 	}
 
-	int mnt_fd =
-	    syscall(__NR_open_tree, root_fd, src_rel.c_str(), OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC);
+	int mnt_fd = syscall(
+	    __NR_open_tree, staging_fd, src_rel.c_str(), OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC);
 	if (mnt_fd < 0) {
 		PLOG_W("open_tree('%s')", src_rel.c_str());
-		unlinkat(root_fd, src_rel.c_str(), 0);
+		unlinkat(staging_fd, src_rel.c_str(), 0);
 		return false;
 	}
 
@@ -457,7 +447,7 @@ static bool mountDynamicContentAt(mount_t* mpt, int root_fd, int parent_fd, cons
 		LOG_W("Failed to apply mount flags to '%s'", basename);
 		if (mpt->flags & (MS_NOSUID | MS_NODEV | MS_NOEXEC)) {
 			close(mnt_fd);
-			unlinkat(root_fd, src_rel.c_str(), 0);
+			unlinkat(staging_fd, src_rel.c_str(), 0);
 			return false;
 		}
 	}
@@ -466,16 +456,17 @@ static bool mountDynamicContentAt(mount_t* mpt, int root_fd, int parent_fd, cons
 		(uintptr_t)basename, (uintptr_t)MOVE_MOUNT_F_EMPTY_PATH) < 0) {
 		PLOG_W("move_mount('%s' -> '%s')", src_rel.c_str(), basename);
 		close(mnt_fd);
-		unlinkat(root_fd, src_rel.c_str(), 0);
+		unlinkat(staging_fd, src_rel.c_str(), 0);
 		return false;
 	}
-	close(mnt_fd);
 
-	if (unlinkat(root_fd, src_rel.c_str(), 0) == -1) {
-		PLOG_W("unlinkat(root_fd, '%s')", src_rel.c_str());
+	if (unlinkat(staging_fd, src_rel.c_str(), 0) == -1) {
+		PLOG_W("unlinkat(staging_fd, '%s')", src_rel.c_str());
 	}
 
-	return openMountForRemount(mpt, parent_fd, basename);
+	mpt->fd = mnt_fd;
+	mpt->mounted = true;
+	return true;
 }
 
 static bool doBindMountAt(mount_t* mpt, int parent_fd, const char* basename) {
@@ -509,12 +500,13 @@ static bool doBindMountAt(mount_t* mpt, int parent_fd, const char* basename) {
 		close(mnt_fd);
 		return false;
 	}
-	close(mnt_fd);
 
-	return openMountForRemount(mpt, parent_fd, basename);
+	mpt->fd = mnt_fd;
+	mpt->mounted = true;
+	return true;
 }
 
-static bool mountSinglePointAt(mount_t* mpt, int root_fd) {
+static bool mountSinglePointAt(mount_t* mpt, int root_fd, int staging_fd) {
 	LOG_D("Mounting (new API): %s", mnt::describeMountPt(*mpt->mpt).c_str());
 
 	const char* rel_dst = util::stripLeadingSlashes(mpt->dst.c_str());
@@ -558,7 +550,7 @@ static bool mountSinglePointAt(mount_t* mpt, int root_fd) {
 	}
 
 	if (!mpt->mpt->src_content().empty()) {
-		return mountDynamicContentAt(mpt, root_fd, parent_fd, basename.c_str());
+		return mountDynamicContentAt(mpt, staging_fd, parent_fd, basename.c_str());
 	}
 
 	if (mpt->flags & MS_BIND) {
@@ -584,9 +576,10 @@ static bool mountSinglePointAt(mount_t* mpt, int root_fd) {
 		close(mnt_fd);
 		return false;
 	}
-	close(mnt_fd);
 
-	return openMountForRemount(mpt, parent_fd, basename.c_str());
+	mpt->fd = mnt_fd;
+	mpt->mounted = true;
+	return true;
 }
 
 static mount_t prepareMountPoint(const nsjail::MountPt& proto) {
@@ -728,36 +721,59 @@ std::unique_ptr<std::string> buildMountTree(nsj_t* nsj, std::vector<mnt::mount_t
 	}
 	close(root_mfd);
 
-	int root_fd =
+	int staging_fd =
 	    openat(AT_FDCWD, destdir->c_str(), O_RDONLY | O_CLOEXEC | O_PATH | O_DIRECTORY);
-	if (root_fd < 0) {
+	if (staging_fd < 0) {
 		PLOG_E("openat('%s')", destdir->c_str());
 		return nullptr;
 	}
 	defer {
-		close(root_fd);
+		close(staging_fd);
 	};
 
-	/* Build entire mount tree using fd-relative operations */
+	/*
+	 * Build entire mount tree using fd-relative operations. Destinations resolve in
+	 * the mount at the jail root, which a "/" entry such as --chroot replaces; a
+	 * lookup from the staging tmpfs' fd would not cross into a mount on top of it.
+	 */
+	int root_fd = -1;
+	defer {
+		if (root_fd >= 0) {
+			close(root_fd);
+		}
+	};
 	for (const auto& proto : nsj->njc.mount()) {
 		mount_t mpt = prepareMountPoint(proto);
 
-		if (!mountSinglePointAt(&mpt, root_fd)) {
+		if (!mountSinglePointAt(&mpt, root_fd >= 0 ? root_fd : staging_fd, staging_fd)) {
 			if (mpt.mpt->mandatory()) {
 				LOG_E("Failed to mount mandatory point: %s", QC(mpt.dst));
 				return nullptr;
 			}
 		}
 		mounted_mpts->push_back(mpt);
+
+		/* A "/" entry becomes the root for the entries after it. */
+		if (mpt.fd >= 0 && util::stripLeadingSlashes(mpt.dst.c_str())[0] == '\0') {
+			int fd = TEMP_FAILURE_RETRY(fcntl(mpt.fd, F_DUPFD_CLOEXEC, 0));
+			if (fd < 0) {
+				PLOG_E("fcntl(F_DUPFD_CLOEXEC) for '%s'", mpt.dst.c_str());
+				return nullptr;
+			}
+			if (root_fd >= 0) {
+				close(root_fd);
+			}
+			root_fd = fd;
+		}
 	}
 
 	if (!nsj->is_root_rw) {
 		struct mount_attr ro_attr = {};
 		ro_attr.attr_set = MOUNT_ATTR_RDONLY;
-		if (util::syscall(__NR_mount_setattr, (uintptr_t)root_fd, (uintptr_t)"",
+		if (util::syscall(__NR_mount_setattr, (uintptr_t)staging_fd, (uintptr_t)"",
 			(uintptr_t)(AT_EMPTY_PATH | AT_RECURSIVE), (uintptr_t)&ro_attr,
 			sizeof(ro_attr)) < 0) {
-			PLOG_E("mount_setattr(root_fd, MOUNT_ATTR_RDONLY)");
+			PLOG_E("mount_setattr(staging_fd, MOUNT_ATTR_RDONLY)");
 			return nullptr;
 		}
 	}
