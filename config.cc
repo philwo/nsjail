@@ -103,6 +103,8 @@ static bool parseInternal(nsj_t* nsj, const nsjail::NsJailConfig& njc) {
 		}
 	}
 
+	/* Replace the copied envars with ones whose bare names are expanded to NAME=value */
+	nsj->njc.clear_envar();
 	for (ssize_t i = 0; i < njc.envar_size(); i++) {
 		cmdline::addEnv(nsj, njc.envar(i));
 	}
