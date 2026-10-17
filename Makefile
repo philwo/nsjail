@@ -157,8 +157,12 @@ test-cmdline: $(BIN)
 	$(call run_test, ./nsjail --rlimit_cpu 1.5 --help > /dev/null, 255)
 	$(call run_test, ./nsjail --time_limit 0x10 --cgroup_mem_swap_max=-1 --user 1000:1000:1 --help > /dev/null, 0)
 
+.PHONY: test-mnt
+test-mnt: $(BIN)
+	$(call run_test, ./tests/mnt.sh, 0)
+
 .PHONY: test
-test: $(BIN) $(TEST_BINS) test-cmdline
+test: $(BIN) $(TEST_BINS) test-cmdline test-mnt
 	$(call run_test, ./tests/nstun_buffer_budget_test, 0)
 	$(call run_test, ./tests/nstun_policy_test, 0)
 	$(call run_test, ./tests/nstun_ip_test, 0)
