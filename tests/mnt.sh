@@ -103,6 +103,10 @@ check entries_in_chroot "$chroot_dirs"'; mkdir "$src/data"' "/=ro /data=rw" "/,/
 check ro_bind_escaped_sub 'mkdir "$src/my disk"; mount -t tmpfs none "$src/my disk"' \
 	"/src=ro /src/my disk=ro" "/src,/src/my disk" -- -R "@SRC@:/src"
 
+# nsjail's user namespace locks the nosuid flag of the chroot's filesystem.
+check chroot_on_nosuid 'mount -t tmpfs -o nosuid none "$src"; '"$chroot_dirs" "/=ro" "/" \
+	-- --chroot "@SRC@"
+
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed"
 	exit 1
