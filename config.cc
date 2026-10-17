@@ -199,6 +199,12 @@ bool parseFile(nsj_t* nsj, const char* file) {
 			    status.ToString().c_str());
 			return false;
 		}
+		/* The ProtoJSON parser doesn't check required fields */
+		if (!njc.IsInitialized()) {
+			LOG_E("Config file %s is missing required fields: %s", QC(file),
+			    njc.InitializationErrorString().c_str());
+			return false;
+		}
 	} else {
 		TextProtoErrorCollector errors(file);
 		google::protobuf::TextFormat::Parser parser;

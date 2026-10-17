@@ -1,0 +1,4 @@
+{
+	"mode": "ONCE",
+	"mount": [{"src": "/", "isBind": true}]
+}

@@ -161,6 +161,7 @@ test-cmdline: $(BIN)
 	# --- Config file parsing ---
 	$(call run_test, ! ./nsjail --config configs/bash-with-fake-geteuid.json --help 2>&1 > /dev/null | grep ., 0)
 	$(call run_test, ./nsjail --config tests/invalid-field.cfg --help 2>&1 | grep -q 'invalid-field.cfg.:3:8: Message type', 0)
+	$(call run_test, ./nsjail --config tests/missing-required.json --help 2>&1 | grep -q 'missing required fields: mount.0..dst', 0)
 
 .PHONY: test test-newapi-recursive-readonly
 # Requires Linux >= 6.3 and mount privileges. Exit 77 is a capability skip.
