@@ -183,6 +183,12 @@ The arguments after `--` replace the config's `exec_bin` arguments, including
 `argv[0]`. If the config sets `exec_bin.path`, nsjail still executes that file
 with the new arguments, the same as with `--exec_file`.
 
+Options apply in the order they appear on the command line. A field that the
+config file sets replaces the value of an earlier option, and a later option
+overrides the config file. Repeated options, such as mounts and environment
+variables, add to those of the config file. Several config files apply the
+same way.
+
 ### Example Configs
 
 - **[bash-with-fake-geteuid.cfg](https://github.com/google/nsjail/blob/master/configs/bash-with-fake-geteuid.cfg)**: Bash with fake root UID

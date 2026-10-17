@@ -68,7 +68,13 @@ uint64_t adjustRLimit(int res, const nsjail::RLimit& rl, const uint64_t val, uns
 }
 
 static bool parseInternal(nsj_t* nsj, const nsjail::NsJailConfig& njc) {
-	nsj->njc.CopyFrom(njc);
+	/*
+	 * Fields that the config sets replace those of earlier options, and repeated fields add to
+	 * them. The envars are added below, with bare names expanded.
+	 */
+	nsjail::NsJailConfig without_envars = njc;
+	without_envars.clear_envar();
+	nsj->njc.MergeFrom(without_envars);
 	/*
 	 * We need to copy the values from the protobuf message to the internal
 	 * struct, because we need to perform some transformations on them.
@@ -103,8 +109,6 @@ static bool parseInternal(nsj_t* nsj, const nsjail::NsJailConfig& njc) {
 		}
 	}
 
-	/* Replace the copied envars with ones whose bare names are expanded to NAME=value */
-	nsj->njc.clear_envar();
 	for (ssize_t i = 0; i < njc.envar_size(); i++) {
 		cmdline::addEnv(nsj, njc.envar(i));
 	}
