@@ -335,7 +335,7 @@ static bool initCloneNs(nsj_t* nsj) {
 		if (!nsj->mnt_newapi) {
 			continue;
 		}
-		if (!newapi::remountPt(mpt) && mpt.mpt->mandatory()) {
+		if (!newapi::remountPt(mpt)) {
 			return false;
 		}
 	}
