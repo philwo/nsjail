@@ -138,53 +138,6 @@ static void applyGenericMountOption(const std::string& opt, uintptr_t* flags) {
 	}
 }
 
-static unsigned long computeLegacyRemountFlags(const mount_t& mpt, const struct statvfs& vfs) {
-	struct {
-		const unsigned long mount_flag;
-		const unsigned long vfs_flag;
-	} static const mountPairs[] = {
-	    {MS_NOSUID, ST_NOSUID},
-	    {MS_NODEV, ST_NODEV},
-	    {MS_NOEXEC, ST_NOEXEC},
-	    {MS_SYNCHRONOUS, ST_SYNCHRONOUS},
-	    {MS_MANDLOCK, ST_MANDLOCK},
-	    {MS_NOATIME, ST_NOATIME},
-	    {MS_NODIRATIME, ST_NODIRATIME},
-	    {MS_RELATIME, ST_RELATIME},
-	    {MS_NOSYMFOLLOW, ST_NOSYMFOLLOW},
-	};
-
-	const unsigned long per_mountpoint_flags =
-	    MS_LAZYTIME | MS_MANDLOCK | MS_NOATIME | MS_NODEV | MS_NODIRATIME | MS_NOEXEC |
-	    MS_NOSUID | MS_RELATIME | MS_RDONLY | MS_SYNCHRONOUS | MS_NOSYMFOLLOW;
-
-	unsigned long flags = MS_REMOUNT | MS_BIND | (mpt.flags & per_mountpoint_flags);
-	for (const auto& i : mountPairs) {
-		if (vfs.f_flag & i.vfs_flag) {
-			flags |= i.mount_flag;
-		}
-	}
-	return flags;
-}
-
-static bool remountWithLegacyMount(const mount_t& mpt) {
-	struct statvfs vfs;
-	if (TEMP_FAILURE_RETRY(statvfs(mpt.dst.c_str(), &vfs)) == -1) {
-		PLOG_W("statvfs('%s')", mpt.dst.c_str());
-		return false;
-	}
-
-	unsigned long flags = computeLegacyRemountFlags(mpt, vfs);
-	LOG_D("Falling back to legacy remount for '%s' with flags: %s", mpt.dst.c_str(),
-	    mnt::flagsToStr(flags).c_str());
-
-	if (mount(mpt.dst.c_str(), mpt.dst.c_str(), nullptr, flags, nullptr) == -1) {
-		PLOG_W("mount('%s', flags=%s)", mpt.dst.c_str(), mnt::flagsToStr(flags).c_str());
-		return false;
-	}
-	return true;
-}
-
 static bool createDirAt(int dir_fd, const char* path, mode_t mode) {
 	path = util::stripLeadingSlashes(path);
 	if (!path[0]) {
@@ -690,14 +643,22 @@ bool remountPt(mnt::mount_t& mpt) {
 		return true;
 	}
 
-	close(mpt.fd);
+	int fd = mpt.fd;
 	mpt.fd = -1;
+	defer {
+		close(fd);
+	};
 
-	if (!remountWithLegacyMount(mpt)) {
-		LOG_W("Failed to apply final flags to '%s'", mpt.dst.c_str());
-		return false;
+	/*
+	 * Each entry got its other flags when mounted, and a read-only bind's
+	 * submounts got read-only too. The top mount becomes read-only last, because
+	 * nsjail may create later entries' mount points in it. This doesn't reach
+	 * the entries mounted inside it.
+	 */
+	if (!(mpt.flags & MS_RDONLY)) {
+		return true;
 	}
-	return true;
+	return applyMountFlags(fd, MS_RDONLY);
 }
 
 std::unique_ptr<std::string> buildMountTree(nsj_t* nsj, std::vector<mnt::mount_t>* mounted_mpts) {
@@ -788,15 +749,10 @@ std::unique_ptr<std::string> buildMountTree(nsj_t* nsj, std::vector<mnt::mount_t
 		}
 	}
 
-	if (!nsj->is_root_rw) {
-		struct mount_attr ro_attr = {};
-		ro_attr.attr_set = MOUNT_ATTR_RDONLY;
-		if (util::syscall(__NR_mount_setattr, (uintptr_t)staging_fd, (uintptr_t)"",
-			(uintptr_t)(AT_EMPTY_PATH | AT_RECURSIVE), (uintptr_t)&ro_attr,
-			sizeof(ro_attr)) < 0) {
-			PLOG_E("mount_setattr(staging_fd, MOUNT_ATTR_RDONLY)");
-			return nullptr;
-		}
+	/* Only the root tmpfs: each entry gets its own flags in remountPt(). */
+	if (!nsj->is_root_rw && !applyMountFlags(staging_fd, MS_RDONLY)) {
+		LOG_E("Failed to make the root read-only");
+		return nullptr;
 	}
 
 	return destdir;
