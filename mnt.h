@@ -28,6 +28,7 @@
 #include <sys/statvfs.h>
 
 #include <string>
+#include <vector>
 
 #include "nsjail.h"
 
@@ -68,6 +69,8 @@ struct mount_t {
 	bool is_dir;
 	bool mounted;
 	int fd; /* Used by new API for deferred remount */
+	/* Used by legacy API: mount points that were read-only in the bind's source */
+	std::vector<std::string> src_rdonly_paths;
 };
 
 bool initNs(nsj_t* nsj);
