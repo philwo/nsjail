@@ -91,6 +91,14 @@ sub='mkdir "$src/sub"; mount -t tmpfs none "$src/sub"'
 check ro_bind "$sub" "/src=ro /src/sub=ro" "/src,/src/sub" -- -R "@SRC@:/src"
 check rw_bind_rw_root "$sub" "/src=rw /src/sub=rw" "/src,/src/sub" -- --rw -B "@SRC@:/src"
 
+# A SETUP that gives $src the mount points that the system binds and /proc need
+# when $src is the jail's root.
+chroot_dirs='for d in "${sysdirs[@]}" /proc; do mkdir -p "$src$d"; done'
+# --chroot puts its / entry first, so every other entry, the system's /usr
+# included, must land in the chroot.
+check entries_in_chroot "$chroot_dirs"'; mkdir "$src/data"' "/=ro /data=rw" "/,/data" \
+	-- --chroot "@SRC@" -m none:/data:tmpfs:rw
+
 if [ "$failures" -ne 0 ]; then
 	echo "$failures check(s) failed"
 	exit 1
